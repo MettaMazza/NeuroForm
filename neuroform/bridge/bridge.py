@@ -84,24 +84,29 @@ class BridgeCore:
     def __init__(self):
         self._kg = None
         self._client = None
+        self._orchestrator = None
         self._adapters: Dict[str, PlatformAdapter] = {}
         self._allowed_channels: List[str] = []
         self._initialized = False
 
-    def initialize(self, kg, client, allowed_channels: Optional[List[str]] = None):
+    def initialize(self, kg, client, allowed_channels: Optional[List[str]] = None,
+                   orchestrator=None):
         """
         Wire the bridge to the NeuroForm brain.
 
         Args:
             kg: KnowledgeGraph instance
-            client: OllamaClient instance (with WorkingMemory + Amygdala)
+            client: OllamaClient instance (fallback if no orchestrator)
             allowed_channels: Optional list of channel IDs to filter on
+            orchestrator: Optional BrainOrchestrator for full cognitive pipeline
         """
         self._kg = kg
         self._client = client
+        self._orchestrator = orchestrator
         self._allowed_channels = allowed_channels or []
         self._initialized = True
-        logger.info(f"Bridge initialized. Allowed channels: {self._allowed_channels}")
+        mode = "orchestrator" if orchestrator else "client"
+        logger.info(f"Bridge initialized ({mode}). Channels: {self._allowed_channels}")
 
     def register_adapter(self, adapter: PlatformAdapter):
         """Register a platform adapter."""
@@ -132,7 +137,10 @@ class BridgeCore:
 
         # Process through the brain
         try:
-            reply = self._client.chat_with_memory(event.user_id, event.content)
+            if self._orchestrator:
+                reply = self._orchestrator.process(event.user_id, event.content)
+            else:
+                reply = self._client.chat_with_memory(event.user_id, event.content)
 
             return ResponseEvent(
                 content=reply,

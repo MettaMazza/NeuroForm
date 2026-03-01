@@ -176,9 +176,8 @@ def run_bot():  # pragma: no cover
 
     # Initialize brain
     from neuroform.memory.graph import KnowledgeGraph
-    from neuroform.llm.ollama_client import OllamaClient
-    from neuroform.memory.working_memory import WorkingMemory
-    from neuroform.memory.amygdala import Amygdala
+    from neuroform.brain.orchestrator import BrainOrchestrator
+    from neuroform.brain.background import BackgroundScheduler
 
     logging.basicConfig(
         level=logging.INFO,
@@ -191,22 +190,34 @@ def run_bot():  # pragma: no cover
         print("ERROR: Neo4j not connected. Set NEO4J_URI/USER/PASSWORD in .env")
         return
 
-    wm = WorkingMemory(capacity=7)
-    amygdala = Amygdala()
     model = os.environ.get("OLLAMA_MODEL", "llama3")
-    client = OllamaClient(kg, model=model, working_memory=wm, amygdala=amygdala)
 
-    # Set up bridge
+    # Create orchestrator with all 9 brain systems
+    orchestrator = BrainOrchestrator(kg, model=model)
+
+    # Set up bridge with orchestrator
     allowed = [channel_id] if channel_id else []
     bridge = BridgeCore()
-    bridge.initialize(kg, client, allowed_channels=allowed)
+    bridge.initialize(
+        kg, orchestrator.client,
+        allowed_channels=allowed,
+        orchestrator=orchestrator,
+    )
 
     # Create and register Discord adapter
     adapter = DiscordAdapter(token, bridge)
     bridge.register_adapter(adapter)
 
+    # Start background scheduler
+    scheduler = BackgroundScheduler(kg, model=model,
+                                    circadian=orchestrator.circadian,
+                                    neuroplasticity=orchestrator.neuroplasticity)
+    scheduler.start()
+
     print(f"Listening on channel: {channel_id or 'ALL'}")
     print(f"Model: {model}")
+    print("All 9 brain systems active.")
+    print("Background scheduler: dream consolidation + DMN + decay")
     print("Starting bot...")
 
     # Run

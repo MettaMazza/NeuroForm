@@ -144,6 +144,20 @@ class TestBridgeCore:
         assert result is not None
         assert "error" in result.content.lower()
 
+    def test_process_message_with_orchestrator(self):
+        bridge = BridgeCore()
+        mock_orch = MagicMock()
+        mock_orch.process.return_value = "Orchestrator response"
+        bridge.initialize(MagicMock(), MagicMock(),
+                         allowed_channels=["ch1"], orchestrator=mock_orch)
+
+        event = MessageEvent("user1", "ch1", "Hello", "test")
+        result = bridge.process_message(event)
+
+        assert result is not None
+        assert result.content == "Orchestrator response"
+        mock_orch.process.assert_called_once_with("user1", "Hello")
+
 
 # ===========================================================================
 # DiscordAdapter Tests
