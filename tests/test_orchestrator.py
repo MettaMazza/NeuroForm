@@ -67,16 +67,20 @@ class TestBrainOrchestrator:
 
     def test_habit_cache_records_invocation(self, orchestrator):
         orchestrator.process("user1", "hello there")
-        count = orchestrator.habit_cache.get_invocation_count("hello_there")
-        assert count == 1
+        # Short responses (<50 chars) should NOT be recorded
+        count = orchestrator.habit_cache.get_invocation_count("hello there")
+        # The mock returns "Test response" (13 chars) which is < 50, so NOT recorded
+        assert count == 0
 
     def test_habit_cache_shortcircuit(self, orchestrator):
-        """After enough invocations, habit cache should bypass LLM."""
-        for i in range(5):
-            orchestrator.process("user1", "hello there")
-        # The 6th call should hit the cache
+        """After enough invocations with long responses, habit cache should bypass LLM."""
+        # Make the response long enough to be cached
+        orchestrator.client.chat_with_memory.return_value = "A" * 60
+        for i in range(15):
+            orchestrator.process("user1", "hello there my friend")
+        # The 16th call should hit the cache
         orchestrator.client.chat_with_memory.reset_mock()
-        response = orchestrator.process("user1", "hello there")
+        response = orchestrator.process("user1", "hello there my friend")
         # Should have gotten the cached response
         assert isinstance(response, str)
 
@@ -123,7 +127,7 @@ class TestBrainOrchestrator:
 
     def test_compute_habit_key(self, orchestrator):
         key = orchestrator._compute_habit_key("Hello world how are you today")
-        assert key == "hello_world_how_are_you"
+        assert key == "hello world how are you today"
 
     def test_compute_habit_key_short(self, orchestrator):
         key = orchestrator._compute_habit_key("hi")
@@ -211,6 +215,20 @@ class TestBrainOrchestrator:
             )
             assert orch.working_memory.capacity == 3
             assert orch.habit_cache.threshold == 2
+
+    def test_habit_not_recorded_for_short_response(self, orchestrator):
+        """Responses under 50 chars should not be cached."""
+        orchestrator.client.chat_with_memory.return_value = "Short"
+        orchestrator.process("user1", "test message")
+        count = orchestrator.habit_cache.get_invocation_count("test message")
+        assert count == 0
+
+    def test_habit_recorded_for_long_response(self, orchestrator):
+        """Responses over 50 chars should be cached."""
+        orchestrator.client.chat_with_memory.return_value = "A" * 60
+        orchestrator.process("user1", "test message")
+        count = orchestrator.habit_cache.get_invocation_count("test message")
+        assert count == 1
 
 
 # ===========================================================================

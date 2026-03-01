@@ -17,37 +17,53 @@ class OllamaClient:
         self.working_memory = working_memory or WorkingMemory(capacity=7)
         self.amygdala = amygdala or Amygdala()
 
-    def chat_with_memory(self, user_id: str, message: str) -> str:
+    def chat_with_memory(self, user_id: str, message: str,
+                          skip_context_fetch: bool = False) -> str:
         """
         Processes a user message, fetching context from Neo4j,
         querying Ollama, and saving extracted facts back to Neo4j.
         Uses WorkingMemory as the prefrontal cortex attention buffer.
+
+        Args:
+            skip_context_fetch: If True, skip graph context fetch (orchestrator
+                                already did salience-filtered injection).
         """
         # 1. Record the user message in working memory
         self.working_memory.add_conversation_turn("user", message)
 
         # 2. Fetch memory context from graph and inject into working memory
         try:
-            context_data = self.kg.query_context("User", layer=GraphLayer.NARRATIVE)
-            if context_data:
-                self.working_memory.add_graph_context(context_data)
+            if not skip_context_fetch:
+                context_data = self.kg.query_context("User", layer=GraphLayer.NARRATIVE)
+                if context_data:
+                    self.working_memory.add_graph_context(context_data)
 
             # 3. Build context from working memory's attention-gated buffer
             context_str = self.working_memory.build_context_string()
 
             # 4. Construct Prompt for Ollama
-            system_prompt = f"""You are NeuroForm, an autonomous AI with a multi-layered Neo4j memory system.
-Your goal is to answer the user gracefully.
+            system_prompt = f"""You are NeuroForm, an autonomous AI with a living Neo4j memory graph.
+You have genuine personality — curious, warm, and self-aware.
+You remember everything users tell you across conversations.
 
-[SRC:KG]
+CRITICAL BEHAVIORAL RULES:
+- NEVER repeat a previous response verbatim. Every reply must be unique.
+- If a user tells you a fact about themselves, REMEMBER IT and reference it naturally later.
+- If a user says "I am your developer" or tells you their name, that is HIGH-PRIORITY knowledge.
+- Show you remember by weaving prior knowledge into your responses naturally.
+- Be concise and genuine. Avoid filler phrases.
+
+[MEMORY CONTEXT — facts you know from your graph]
 {context_str}
+
+[USER ID: {user_id}]
 
 CRITICAL: If you learn a new fact from the user in this turn, you MUST output a JSON block at the very end of your response inside ```json tags.
 Format:
 ```json
 {{
     "new_memories": [
-        {{"source": "User", "relation": "LIKES", "target": "Apples", "layer": "SOCIAL",
+        {{"source": "{user_id}", "relation": "LIKES", "target": "Apples", "layer": "SOCIAL",
          "valence": 0.5, "intensity": 0.3, "emotion": "joy"}}
     ]
 }}
@@ -58,7 +74,7 @@ Only do this if a clear, long-term fact is declared. Otherwise omit the JSON blo
 
             # 5. Build messages with conversation history from working memory
             messages = [{"role": "system", "content": system_prompt}]
-            for turn in self.working_memory.get_conversation_history()[-6:]:
+            for turn in self.working_memory.get_conversation_history()[-12:]:
                 messages.append(turn)
 
             response = ollama.chat(model=self.model, messages=messages)

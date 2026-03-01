@@ -62,7 +62,7 @@ class BrainOrchestrator:
         self.working_memory = working_memory or WorkingMemory(capacity=7)
         self.amygdala = amygdala or Amygdala()
         self.salience = salience or SalienceScorer(attention_budget=10)
-        self.habit_cache = habit_cache or HabitCache(threshold=5)
+        self.habit_cache = habit_cache or HabitCache(threshold=15)
         self.nt = neurotransmitters or NeurotransmitterState()
         self.predictive_model = predictive_model or PredictiveModel(kg, model=model)
         self.dmn = dmn or DefaultModeNetwork(kg, model=model)
@@ -146,11 +146,12 @@ class BrainOrchestrator:
         except Exception as e:
             logger.warning(f"Prediction skipped: {e}")
 
-        # ──── 7. LLM Inference (via OllamaClient) ────
-        response = self.client.chat_with_memory(user_id, message)
+        # ──── 7. LLM Inference (via OllamaClient, skip duplicate context fetch) ────
+        response = self.client.chat_with_memory(user_id, message, skip_context_fetch=True)
 
-        # ──── 8. Record habit invocation ────
-        self.habit_cache.record_invocation(habit_key, response)
+        # ──── 8. Record habit invocation (only for substantive responses) ────
+        if len(response) > 50:
+            self.habit_cache.record_invocation(habit_key, response)
 
         # ──── 9. NT modulation from response sentiment (simple heuristic) ────
         sentiment = self._estimate_sentiment(message)
@@ -199,9 +200,9 @@ class BrainOrchestrator:
                 logger.warning(f"Feedback signal failed: {e}")
 
     def _compute_habit_key(self, message: str) -> str:
-        """Derive a habit key from the message (normalized first 5 tokens)."""
-        tokens = message.lower().strip().split()[:5]
-        return "_".join(tokens) if tokens else "empty"
+        """Derive a habit key from the full normalized message."""
+        normalized = " ".join(message.lower().strip().split())
+        return normalized if normalized else "empty"
 
     def _build_history_string(self) -> str:
         """Build a compact history string for the predictive model."""
