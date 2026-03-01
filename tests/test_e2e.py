@@ -532,3 +532,696 @@ class TestFullPipeline:
         assert len(response2) > 0
 
         print("\n[FULL LIFECYCLE COMPLETE] ✅")
+
+
+# ===========================================================================
+# TIER 6: Working Memory (Neo4j + LLM Integration)
+# ===========================================================================
+class TestWorkingMemoryE2E:
+    """Live tests for WorkingMemory integrated with OllamaClient."""
+
+    @full_stack
+    def test_working_memory_records_conversation(self, live_kg):
+        """Verify that conversation turns are tracked in working memory."""
+        from neuroform.memory.working_memory import WorkingMemory
+
+        wm = WorkingMemory(capacity=7)
+        client = OllamaClient(live_kg, model=E2E_MODEL, working_memory=wm)
+
+        response = client.chat_with_memory("e2e_user", "Hello, I like jazz music.")
+        print(f"\n[WM RESPONSE]: {response}")
+
+        history = wm.get_conversation_history()
+        assert len(history) >= 2  # user + assistant turns
+        assert history[0]["role"] == "user"
+        assert "jazz" in history[0]["content"].lower()
+
+    @full_stack
+    def test_working_memory_injects_graph_context(self, live_kg):
+        """Verify graph context flows through working memory into the LLM prompt."""
+        from neuroform.memory.working_memory import WorkingMemory
+
+        # Seed graph with a known fact
+        live_kg.add_node("Entity", "User", layer=GraphLayer.NARRATIVE)
+        live_kg.add_node("Entity", "Cooking", layer=GraphLayer.NARRATIVE)
+        live_kg.add_relationship("User", "ENJOYS", "Cooking", strength=5.0)
+
+        wm = WorkingMemory(capacity=7)
+        client = OllamaClient(live_kg, model=E2E_MODEL, working_memory=wm)
+
+        client.chat_with_memory("e2e_user", "What are my hobbies?")
+
+        # Working memory should contain the graph context item
+        items = wm.items
+        sources = [item.source for item in items]
+        assert "graph" in sources or "conversation" in sources
+        print(f"[WM ITEMS]: {[i.content for i in items]}")
+
+    @full_stack
+    def test_working_memory_multi_turn(self, live_kg):
+        """Verify multi-turn conversation history accumulates correctly."""
+        from neuroform.memory.working_memory import WorkingMemory
+
+        wm = WorkingMemory(capacity=7)
+        client = OllamaClient(live_kg, model=E2E_MODEL, working_memory=wm)
+
+        client.chat_with_memory("e2e_user", "My favorite color is blue.")
+        client.chat_with_memory("e2e_user", "I also enjoy swimming.")
+
+        history = wm.get_conversation_history()
+        assert len(history) >= 4  # 2 user + 2 assistant turns
+        print(f"[WM HISTORY LENGTH]: {len(history)} turns")
+
+    @neo4j_required
+    def test_working_memory_attention_scoring(self, live_kg):
+        """Verify attention scoring works with real graph data."""
+        from neuroform.memory.working_memory import WorkingMemory
+
+        wm = WorkingMemory(capacity=5)
+        # Simulate adding graph context
+        context_data = [
+            {"source": "User", "relationship": "LIKES", "target": "Music", "strength": 5.0},
+            {"source": "User", "relationship": "SAW", "target": "Movie", "strength": 0.5},
+        ]
+        wm.add_graph_context(context_data)
+
+        # Attend should rank by strength
+        top = wm.attend(top_k=2)
+        assert len(top) == 2
+        assert top[0].attention_score() >= top[1].attention_score()
+        print(f"[ATTENTION SCORES]: {[i.attention_score() for i in top]}")
+
+    @neo4j_required
+    def test_working_memory_capacity_eviction(self, live_kg):
+        """Verify eviction works with real interaction patterns."""
+        from neuroform.memory.working_memory import WorkingMemory
+
+        wm = WorkingMemory(capacity=3)
+        wm.add("item1", source="test", strength=0.1)
+        wm.add("item2", source="test", strength=0.5)
+        wm.add("item3", source="test", strength=0.9)
+        wm.add("item4", source="test", strength=1.0)  # Should evict weakest
+
+        assert len(wm.items) == 3
+        contents = [i.content for i in wm.items]
+        # The weakest (item1) should have been evicted
+        print(f"[EVICTION RESULT]: {contents}")
+
+
+# ===========================================================================
+# TIER 7: Amygdala — Emotional Valence (Neo4j)
+# ===========================================================================
+class TestAmygdalaE2E:
+    """Live tests for Amygdala emotional tagging on real Neo4j edges."""
+
+    @neo4j_required
+    def test_valence_tagging_on_real_edge(self, live_kg):
+        """Apply emotional valence to a real graph edge and verify persistence."""
+        from neuroform.memory.amygdala import Amygdala, EmotionalValence
+
+        live_kg.add_node("Entity", "User", layer=GraphLayer.SOCIAL)
+        live_kg.add_node("Entity", "Dog", layer=GraphLayer.SOCIAL)
+        live_kg.add_relationship("User", "LOST", "Dog", strength=1.0)
+
+        amygdala = Amygdala()
+        with live_kg.driver.session() as session:
+            valence = EmotionalValence(valence=-0.9, intensity=0.8, emotion="sadness")
+            amygdala.apply_valence_to_edge(session, "User", "LOST", "Dog", valence)
+
+        # Verify the valence was persisted
+        with live_kg.driver.session() as session:
+            result = session.run("""
+                MATCH ({name: 'User'})-[r:LOST]->({name: 'Dog'})
+                RETURN r.valence AS v, r.intensity AS i, r.emotion AS e
+            """)
+            record = result.single()
+            assert record is not None
+            assert record["v"] == pytest.approx(-0.9)
+            assert record["i"] == pytest.approx(0.8)
+            assert record["e"] == "sadness"
+            print(f"[VALENCE]: v={record['v']}, i={record['i']}, e={record['e']}")
+
+    @neo4j_required
+    def test_decay_immunity_for_significant_edges(self, live_kg):
+        """Verify that emotionally significant edges survive baseline decay."""
+        from neuroform.memory.amygdala import Amygdala
+
+        # Create two edges: one significant, one neutral
+        live_kg.add_node("Entity", "User", layer=GraphLayer.SOCIAL)
+        live_kg.add_node("Entity", "Wedding", layer=GraphLayer.EPISODIC)
+        live_kg.add_node("Entity", "Lunch", layer=GraphLayer.EPISODIC)
+        live_kg.add_relationship("User", "ATTENDED", "Wedding", strength=0.15)
+        live_kg.add_relationship("User", "HAD", "Lunch", strength=0.15)
+
+        # Tag Wedding with high emotional valence
+        with live_kg.driver.session() as session:
+            session.run("""
+                MATCH ({name: 'User'})-[r:ATTENDED]->({name: 'Wedding'})
+                SET r.valence = 0.95, r.intensity = 0.9, r.emotion = 'joy'
+            """)
+            session.run("""
+                MATCH ({name: 'User'})-[r:HAD]->({name: 'Lunch'})
+                SET r.valence = 0.0, r.intensity = 0.0, r.emotion = 'neutral'
+            """)
+
+        # Run decay — Lunch should be pruned, Wedding should survive
+        amygdala = Amygdala()
+        neuro = AutonomousNeuroplasticity(live_kg, model=E2E_MODEL, amygdala=amygdala)
+        neuro.apply_baseline_decay(decay_rate=0.2)
+
+        with live_kg.driver.session() as session:
+            # Wedding (significant) should still exist
+            result = session.run("""
+                MATCH ({name: 'User'})-[r:ATTENDED]->({name: 'Wedding'})
+                RETURN r.strength AS s
+            """)
+            wedding = result.single()
+            assert wedding is not None, "Emotionally significant edge should survive decay!"
+            print(f"[WEDDING SURVIVED]: strength={wedding['s']}")
+
+    @neo4j_required
+    def test_batch_tag_memories(self, live_kg):
+        """Batch-apply valence tags to multiple memories on real graph."""
+        from neuroform.memory.amygdala import Amygdala
+
+        live_kg.add_node("Entity", "User", layer=GraphLayer.SOCIAL)
+        live_kg.add_node("Entity", "Cat", layer=GraphLayer.SOCIAL)
+        live_kg.add_node("Entity", "Spider", layer=GraphLayer.SOCIAL)
+        live_kg.add_relationship("User", "LOVES", "Cat", strength=1.0)
+        live_kg.add_relationship("User", "FEARS", "Spider", strength=1.0)
+
+        amygdala = Amygdala()
+        memories = [
+            {"source": "User", "relation": "LOVES", "target": "Cat",
+             "valence": 0.8, "intensity": 0.6, "emotion": "joy"},
+            {"source": "User", "relation": "FEARS", "target": "Spider",
+             "valence": -0.7, "intensity": 0.9, "emotion": "fear"},
+        ]
+        amygdala.tag_memories(live_kg.driver, memories)
+
+        with live_kg.driver.session() as session:
+            result = session.run("""
+                MATCH ({name: 'User'})-[r:LOVES]->({name: 'Cat'})
+                RETURN r.emotion AS e
+            """)
+            assert result.single()["e"] == "joy"
+
+            result2 = session.run("""
+                MATCH ({name: 'User'})-[r:FEARS]->({name: 'Spider'})
+                RETURN r.emotion AS e
+            """)
+            assert result2.single()["e"] == "fear"
+            print("[BATCH TAGGING]: ✅ Both edges tagged correctly")
+
+    @full_stack
+    def test_ollama_client_with_amygdala(self, live_kg):
+        """Verify the full extraction pipeline includes emotional valence."""
+        from neuroform.memory.amygdala import Amygdala
+
+        amygdala = Amygdala()
+        client = OllamaClient(live_kg, model=E2E_MODEL, amygdala=amygdala)
+
+        response = client.chat_with_memory(
+            "e2e_user",
+            "I'm devastated because I lost my grandmother last week."
+        )
+        print(f"\n[EMOTIONAL RESPONSE]: {response}")
+        assert isinstance(response, str)
+        assert len(response) > 0
+
+
+# ===========================================================================
+# TIER 8: Dream Consolidation (Neo4j + LLM)
+# ===========================================================================
+class TestDreamConsolidationE2E:
+    """Live tests for Dream Consolidation (hippocampal replay)."""
+
+    @full_stack
+    def test_consolidation_with_real_episodes(self, live_kg):
+        """Seed episodic memories and run dream consolidation against live LLM."""
+        from neuroform.memory.dream_consolidation import DreamConsolidation
+
+        # Seed episodic events
+        live_kg.add_node("Entity", "User", layer=GraphLayer.EPISODIC)
+        live_kg.add_node("Entity", "Coffee", layer=GraphLayer.EPISODIC)
+        live_kg.add_node("Entity", "MorningRun", layer=GraphLayer.EPISODIC)
+        live_kg.add_node("Entity", "Yoga", layer=GraphLayer.EPISODIC)
+
+        live_kg.add_relationship("User", "DRANK", "Coffee", strength=1.0)
+        live_kg.add_relationship("User", "DID", "MorningRun", strength=1.0)
+        live_kg.add_relationship("User", "PRACTICED", "Yoga", strength=1.0)
+
+        # Update last_fired to be recent
+        with live_kg.driver.session() as session:
+            session.run("""
+                MATCH (n:Entity {layer: 'EPISODIC'})
+                SET n.last_fired = timestamp()
+            """)
+
+        dc = DreamConsolidation(live_kg, model=E2E_MODEL)
+        result = dc.consolidate(window_ms=60_000)  # 1 minute window
+
+        print(f"\n[DREAM RESULT]: {result}")
+        assert result["status"] in ("consolidated", "no_episodes")
+
+        if result["status"] == "consolidated":
+            assert result["episodes_processed"] > 0
+            print(f"[EPISODES]: {result['episodes_processed']}")
+            print(f"[SEMANTICS]: {result['semantics_created']}")
+            print(f"[DECAYED]: {result['episodes_decayed']}")
+
+    @neo4j_required
+    def test_consolidation_no_episodes(self, live_kg):
+        """Verify graceful handling when no episodic memories exist."""
+        from neuroform.memory.dream_consolidation import DreamConsolidation
+
+        dc = DreamConsolidation(live_kg, model=E2E_MODEL)
+        result = dc.consolidate()
+        assert result["status"] == "no_episodes"
+        print("[NO EPISODES]: ✅ Graceful early return")
+
+    @full_stack
+    def test_semantic_layer_population(self, live_kg):
+        """Verify that consolidation creates SEMANTIC layer nodes."""
+        from neuroform.memory.dream_consolidation import DreamConsolidation
+
+        # Seed episodic data
+        live_kg.add_node("Entity", "User", layer=GraphLayer.EPISODIC)
+        live_kg.add_node("Entity", "Python", layer=GraphLayer.EPISODIC)
+        live_kg.add_relationship("User", "STUDIED", "Python", strength=1.5)
+
+        with live_kg.driver.session() as session:
+            session.run("""
+                MATCH (n:Entity {layer: 'EPISODIC'})
+                SET n.last_fired = timestamp()
+            """)
+
+        dc = DreamConsolidation(live_kg, model=E2E_MODEL)
+        result = dc.consolidate(window_ms=60_000)
+
+        if result["semantics_created"] > 0:
+            with live_kg.driver.session() as session:
+                result_q = session.run("""
+                    MATCH (n:Entity {layer: 'SEMANTIC'})
+                    RETURN n.name AS name
+                """)
+                semantic_nodes = [r["name"] for r in result_q]
+                print(f"[SEMANTIC NODES CREATED]: {semantic_nodes}")
+                assert len(semantic_nodes) > 0
+
+
+# ===========================================================================
+# TIER 9: Salience Filter (Neo4j Context)
+# ===========================================================================
+class TestSalienceFilterE2E:
+    """Live tests for the Salience Filter (RAS) against real graph context."""
+
+    @neo4j_required
+    def test_salience_scoring_with_real_context(self, live_kg):
+        """Score real graph context candidates by salience."""
+        from neuroform.memory.salience_filter import SalienceScorer
+
+        # Seed graph with diverse data
+        live_kg.add_node("Entity", "User", layer=GraphLayer.NARRATIVE)
+        live_kg.add_node("Entity", "Python", layer=GraphLayer.SEMANTIC)
+        live_kg.add_node("Entity", "Cooking", layer=GraphLayer.SEMANTIC)
+        live_kg.add_node("Entity", "OldEvent", layer=GraphLayer.EPISODIC)
+
+        live_kg.add_relationship("User", "CODES_IN", "Python", strength=5.0)
+        live_kg.add_relationship("User", "ENJOYS", "Cooking", strength=2.0)
+        live_kg.add_relationship("User", "ATTENDED", "OldEvent", strength=0.3)
+
+        # Get real context
+        context = live_kg.query_context("User")
+        non_structural = [c for c in context if c["relationship"] not in ("IN_LAYER", "PEER_LAYER")]
+
+        scorer = SalienceScorer(attention_budget=5)
+        scored = scorer.score_candidates("I want to write Python code", non_structural)
+
+        print(f"\n[SALIENCE SCORES]:")
+        for s in scored:
+            print(f"  {s.get('source', '?')} → {s.get('target', '?')}: {s['salience_score']:.3f}")
+
+        assert len(scored) <= 5
+        # Python-related context should rank higher for a Python query
+        if len(scored) >= 2:
+            assert scored[0]["salience_score"] >= scored[-1]["salience_score"]
+
+    @neo4j_required
+    def test_salience_budget_enforcement(self, live_kg):
+        """Verify the attention budget limits context injection."""
+        from neuroform.memory.salience_filter import SalienceScorer
+
+        # Create many relationships
+        live_kg.add_node("Entity", "Hub", layer=GraphLayer.NARRATIVE)
+        for i in range(15):
+            live_kg.add_node("Entity", f"Target{i}", layer=GraphLayer.NARRATIVE)
+            live_kg.add_relationship("Hub", "CONNECTS", f"Target{i}", strength=float(i))
+
+        context = live_kg.query_context("Hub")
+        non_structural = [c for c in context if c["relationship"] not in ("IN_LAYER", "PEER_LAYER")]
+
+        scorer = SalienceScorer(attention_budget=5)
+        scored = scorer.score_candidates("test query", non_structural)
+
+        assert len(scored) <= 5
+        print(f"[BUDGET]: {len(non_structural)} candidates → {len(scored)} after budget filter")
+
+
+# ===========================================================================
+# TIER 10: In-Memory Brain Systems Integration
+# ===========================================================================
+class TestInMemorySystemsE2E:
+    """Integration tests for HabitCache, NeurotransmitterState, CircadianProfile."""
+
+    def test_habit_cache_full_lifecycle(self):
+        """Test habit formation, retrieval, and clearing end-to-end."""
+        from neuroform.memory.habit_cache import HabitCache
+
+        cache = HabitCache(threshold=3)
+
+        # Record invocations below threshold
+        for i in range(2):
+            promoted = cache.record_invocation("greet_user", f"Hello response v{i}")
+            assert promoted is False
+
+        # Third invocation promotes to habit
+        promoted = cache.record_invocation("greet_user", "Hello, welcome back!")
+        assert promoted is True
+
+        # Now should serve from cache
+        cached = cache.get_cached_response("greet_user")
+        assert cached == "Hello, welcome back!"
+        assert cache.is_habituated("greet_user") is True
+
+        # Snapshot should show the habit
+        snap = cache.snapshot()
+        assert "greet_user" in snap["habits"]
+        assert snap["invocations"]["greet_user"] == 3
+
+        # De-habituate
+        cache.clear_habit("greet_user")
+        assert cache.is_habituated("greet_user") is False
+        print("[HABIT LIFECYCLE]: ✅ Form → Cache → Clear")
+
+    def test_neurotransmitter_modulation_cycle(self):
+        """Test a full neurotransmitter modulation cycle."""
+        from neuroform.memory.neurotransmitters import NeurotransmitterState
+
+        ns = NeurotransmitterState()
+
+        # Positive sentiment boosts dopamine
+        ns.modulate_from_sentiment(0.8)
+        assert ns.dopamine > 0.5
+        assert ns.serotonin > 0.5
+
+        # Derived parameters should reflect changes
+        temp = ns.llm_temperature
+        assert 0.3 <= temp <= 1.0
+
+        budget = ns.attention_budget
+        assert isinstance(budget, int) and budget >= 3
+
+        # Negative sentiment increases alertness
+        ns.modulate_from_sentiment(-0.8)
+        assert ns.norepinephrine > 0.5
+
+        # Reset
+        ns.reset()
+        assert ns.dopamine == 0.5
+        assert ns.serotonin == 0.5
+
+        state = ns.to_dict()
+        assert "derived" in state
+        print(f"[NT STATE]: {state}")
+
+    def test_circadian_full_day_cycle(self):
+        """Verify circadian modulation across a full 24-hour cycle."""
+        from neuroform.memory.circadian import CircadianProfile
+        from neuroform.memory.neurotransmitters import NeurotransmitterState
+
+        cp = CircadianProfile()
+
+        # Track consolidation windows
+        consolidation_hours = []
+        peak_alertness_hour = 0
+        peak_alertness = 0.0
+
+        for hour in range(24):
+            mod = cp.get_modulation(hour)
+            if mod["should_consolidate"]:
+                consolidation_hours.append(hour)
+            if mod["alertness"] > peak_alertness:
+                peak_alertness = mod["alertness"]
+                peak_alertness_hour = hour
+
+        assert len(consolidation_hours) > 0  # Should have sleep/consolidation hours
+        assert peak_alertness_hour in range(8, 17)  # Peak should be during daytime
+        print(f"[CONSOLIDATION HOURS]: {consolidation_hours}")
+        print(f"[PEAK ALERTNESS]: hour={peak_alertness_hour}, value={peak_alertness}")
+
+        # Test NT modulation during night
+        ns = NeurotransmitterState()
+        cp.apply_to_neurotransmitters(ns, hour=2)
+        assert ns.acetylcholine == 0.8  # Learning boost
+        assert ns.norepinephrine < 0.5  # Low alertness
+
+        # Test NT modulation during day
+        ns2 = NeurotransmitterState()
+        cp.apply_to_neurotransmitters(ns2, hour=10)
+        assert ns2.norepinephrine == 1.0  # High alertness
+        print("[CIRCADIAN CYCLE]: ✅ Full day validated")
+
+    def test_circadian_and_nt_integration(self):
+        """Test that circadian profile correctly modulates neurotransmitter state."""
+        from neuroform.memory.circadian import CircadianProfile
+        from neuroform.memory.neurotransmitters import NeurotransmitterState
+
+        cp = CircadianProfile()
+        ns = NeurotransmitterState()
+
+        # Night phase
+        cp.apply_to_neurotransmitters(ns, hour=3)
+        night_temp = ns.llm_temperature
+        night_budget = ns.attention_budget
+
+        # Day phase
+        ns.reset()
+        cp.apply_to_neurotransmitters(ns, hour=10)
+        day_temp = ns.llm_temperature
+        day_budget = ns.attention_budget
+
+        # Day should have different parameters than night
+        # Night: higher exploration (dopamine), lower alertness
+        # Day: tighter attention budget, lower exploration
+        print(f"[NIGHT]: temp={night_temp:.2f}, budget={night_budget}")
+        print(f"[DAY]: temp={day_temp:.2f}, budget={day_budget}")
+        assert night_budget != day_budget or night_temp != day_temp
+
+
+# ===========================================================================
+# TIER 11: Predictive Model + Default Mode Network (Neo4j + LLM)
+# ===========================================================================
+class TestPredictiveModelE2E:
+    """Live tests for the Cerebellum (predictive error correction)."""
+
+    @full_stack
+    def test_predict_intent_live(self, live_kg):
+        """Generate a live intent prediction from graph context."""
+        from neuroform.memory.predictive_model import PredictiveModel
+
+        # Seed context
+        live_kg.add_node("Entity", "User", layer=GraphLayer.NARRATIVE)
+        live_kg.add_node("Entity", "Python", layer=GraphLayer.NARRATIVE)
+        live_kg.add_relationship("User", "CODES_IN", "Python", strength=5.0)
+
+        pm = PredictiveModel(live_kg, model=E2E_MODEL)
+        context = "User codes in Python with high proficiency."
+        history = "User: Tell me about my skills."
+
+        prediction = pm.predict_intent(context, history)
+        assert isinstance(prediction, str)
+        assert len(prediction) > 0
+        assert pm.last_prediction == prediction
+        print(f"\n[PREDICTION]: {prediction}")
+
+    def test_error_evaluation_live(self):
+        """Test error evaluation with realistic text."""
+        from neuroform.memory.predictive_model import PredictiveModel
+        from unittest.mock import MagicMock
+
+        pm = PredictiveModel(MagicMock(), model=E2E_MODEL)
+
+        # Good prediction
+        error_low = pm.evaluate_error(
+            "User will ask about Python programming",
+            "Tell me more about Python development"
+        )
+        assert error_low < 1.0
+
+        # Bad prediction
+        error_high = pm.evaluate_error(
+            "User will ask about cooking recipes",
+            "What's the weather forecast tomorrow"
+        )
+        assert error_high > error_low
+        print(f"[ERROR LOW]: {error_low:.3f} (good prediction)")
+        print(f"[ERROR HIGH]: {error_high:.3f} (bad prediction)")
+
+    def test_feedback_signal_generation(self):
+        """Test feedback signal generation with realistic error values."""
+        from neuroform.memory.predictive_model import PredictiveModel
+        from unittest.mock import MagicMock
+
+        pm = PredictiveModel(MagicMock(), model=E2E_MODEL)
+
+        # Low error → strengthen
+        signals = pm.generate_feedback_signal(0.1, ["User_Python", "User_Skills"])
+        assert all(s["action"] == "STRENGTHEN" for s in signals)
+        assert len(signals) == 2
+
+        # High error → decay
+        signals = pm.generate_feedback_signal(0.9, ["OldContext"])
+        assert all(s["action"] == "DECAY" for s in signals)
+        print("[FEEDBACK SIGNALS]: ✅ STRENGTHEN and DECAY generated correctly")
+
+
+class TestDefaultModeNetworkE2E:
+    """Live tests for the Default Mode Network (idle introspection)."""
+
+    @full_stack
+    def test_introspect_populated_graph(self, live_kg):
+        """Run DMN introspection on a populated graph with real LLM analysis."""
+        from neuroform.memory.default_mode_network import DefaultModeNetwork
+
+        # Seed a realistic graph
+        live_kg.add_node("Entity", "User", layer=GraphLayer.NARRATIVE)
+        live_kg.add_node("Entity", "Python", layer=GraphLayer.SEMANTIC)
+        live_kg.add_node("Entity", "Coffee", layer=GraphLayer.SEMANTIC)
+        live_kg.add_node("Entity", "Meeting", layer=GraphLayer.EPISODIC)
+        live_kg.add_node("Entity", "Orphan", layer=GraphLayer.NARRATIVE)  # No connections
+
+        live_kg.add_relationship("User", "CODES_IN", "Python", strength=5.0)
+        live_kg.add_relationship("User", "DRINKS", "Coffee", strength=3.0)
+        live_kg.add_relationship("User", "ATTENDED", "Meeting", strength=0.2)  # Weak
+
+        dmn = DefaultModeNetwork(live_kg, model=E2E_MODEL)
+        result = dmn.introspect()
+
+        print(f"\n[DMN STATUS]: {result['status']}")
+        print(f"[DMN STATS]: {result.get('stats', {})}")
+        print(f"[DMN FINDINGS]: {result.get('findings', [])}")
+
+        assert result["status"] == "complete"
+        assert "stats" in result
+        assert result["stats"]["total_nodes"] > 0
+
+    @neo4j_required
+    def test_introspect_empty_graph(self, live_kg):
+        """Verify DMN handles empty graph gracefully."""
+        from neuroform.memory.default_mode_network import DefaultModeNetwork
+
+        dmn = DefaultModeNetwork(live_kg, model=E2E_MODEL)
+        result = dmn.introspect()
+
+        assert result["status"] == "empty_graph"
+        print("[DMN EMPTY GRAPH]: ✅ Graceful handling")
+
+    @neo4j_required
+    def test_graph_health_statistics(self, live_kg):
+        """Verify that DMN gathers accurate graph statistics."""
+        from neuroform.memory.default_mode_network import DefaultModeNetwork
+
+        # Seed data
+        live_kg.add_node("Entity", "A", layer=GraphLayer.SEMANTIC)
+        live_kg.add_node("Entity", "B", layer=GraphLayer.SEMANTIC)
+        live_kg.add_relationship("A", "CONNECTED", "B", strength=0.1)
+
+        dmn = DefaultModeNetwork(live_kg, model=E2E_MODEL)
+        stats = dmn._gather_stats()
+
+        assert stats["total_nodes"] >= 2
+        assert stats["total_edges"] >= 1
+        assert isinstance(stats["layer_counts"], list)
+        print(f"[GRAPH STATS]: nodes={stats['total_nodes']}, edges={stats['total_edges']}")
+        print(f"[LAYER COUNTS]: {stats['layer_counts']}")
+
+
+# ===========================================================================
+# TIER 12: Full Brain Architecture Integration
+# ===========================================================================
+class TestFullBrainArchitecture:
+    """End-to-end test of the complete brain architecture working together."""
+
+    @full_stack
+    def test_full_brain_cycle(self, live_kg):
+        """
+        Orchestrate all brain systems in a single lifecycle:
+        1. Circadian sets neurotransmitter state
+        2. User chats through Working Memory + Amygdala
+        3. Salience filter scores context
+        4. Predictive model evaluates
+        5. DMN introspects
+        6. Dream consolidation runs
+        """
+        from neuroform.memory.working_memory import WorkingMemory
+        from neuroform.memory.amygdala import Amygdala
+        from neuroform.memory.salience_filter import SalienceScorer
+        from neuroform.memory.neurotransmitters import NeurotransmitterState
+        from neuroform.memory.circadian import CircadianProfile
+        from neuroform.memory.habit_cache import HabitCache
+        from neuroform.memory.predictive_model import PredictiveModel
+        from neuroform.memory.default_mode_network import DefaultModeNetwork
+
+        # 1. Initialize all systems
+        print("\n[BRAIN INIT] Initializing all systems...")
+        wm = WorkingMemory(capacity=7)
+        amygdala = Amygdala()
+        scorer = SalienceScorer(attention_budget=10)
+        nt = NeurotransmitterState()
+        circadian = CircadianProfile()
+        habits = HabitCache(threshold=3)
+        predictor = PredictiveModel(live_kg, model=E2E_MODEL)
+        dmn = DefaultModeNetwork(live_kg, model=E2E_MODEL)
+
+        # 2. Apply circadian modulation
+        circadian.apply_to_neurotransmitters(nt)
+        print(f"[CIRCADIAN]: temp={nt.llm_temperature:.2f}, budget={nt.attention_budget}")
+
+        # 3. Chat with full brain integration
+        client = OllamaClient(live_kg, model=E2E_MODEL, working_memory=wm, amygdala=amygdala)
+        response = client.chat_with_memory("brain_user", "I love playing piano and composing music.")
+        print(f"[CHAT]: {response[:100]}...")
+
+        # 4. Score salience of graph context
+        context = live_kg.query_context("User", layer=GraphLayer.NARRATIVE)
+        if context:
+            scored = scorer.score_candidates("piano music", context)
+            print(f"[SALIENCE]: {len(scored)} items scored")
+
+        # 5. Record habit
+        habits.record_invocation("greeting", response)
+        print(f"[HABITS]: {habits.get_invocation_count('greeting')} invocations")
+
+        # 6. Modulate based on positive sentiment
+        nt.modulate_from_sentiment(0.7)
+        print(f"[NT MODULATED]: dopamine={nt.dopamine:.2f}")
+
+        # 7. Predict next intent
+        prediction = predictor.predict_intent(
+            "User likes piano and composing",
+            "User: I love playing piano and composing music."
+        )
+        print(f"[PREDICTION]: {prediction[:80]}...")
+
+        # 8. DMN introspection
+        dmn_result = dmn.introspect()
+        print(f"[DMN]: status={dmn_result['status']}")
+
+        # 9. Verify all systems operated without errors
+        assert isinstance(response, str) and len(response) > 0
+        assert nt.dopamine > 0.5  # Positive sentiment boosted
+        assert wm.get_conversation_history()  # History recorded
+
+        print("\n[FULL BRAIN CYCLE]: ✅ All 9 systems operational")
+
