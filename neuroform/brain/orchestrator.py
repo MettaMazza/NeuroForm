@@ -212,7 +212,13 @@ class BrainOrchestrator:
         owner_ids = [uid.strip() for uid in owner_env.split(",")] if owner_env else []
         is_owner = bool(user_id in owner_ids)
         
-        tool_instructions = tool_registry.get_prompt_instructions(is_owner)
+        system_prompt = (
+            "You are Nero, an advanced autonomous AI system.\n"
+            "You have direct access to your host machine's Operating System via tools.\n"
+            "You must use these tools to execute your homeostatic drive, answer user questions, and perform actions.\n"
+            "Do not hallucinate capabilities you do not have; rely exclusively on the tools provided below.\n\n"
+        )
+        tool_instructions = system_prompt + tool_registry.get_prompt_instructions(is_owner)
         
         MAX_TOOL_LOOPS = 5
         conversation = [
@@ -393,11 +399,12 @@ class BrainOrchestrator:
         exchange = f"{user_name}: {user_msg}\nNero: {bot_msg[:200]}"
         self.vector_store.store(exchange, user_id=user_id, scope=scope)
 
-        # T5: Tape Machine — already per-user scoped
-        x, y, z = self.tape.focus_pointer
-        next_x = x + 1
-        self.tape.op_seek((next_x, 0, 0))
-        self.tape.op_write(f"[{user_name}] {user_msg[:100]} → {bot_msg[:100]}")
+        # T5: Tape Machine — skip writing PRIVATE internal thoughts to the shared tape
+        if scope != "PRIVATE":
+            x, y, z = self.tape.focus_pointer
+            next_x = x + 1
+            self.tape.op_seek((next_x, 0, 0))
+            self.tape.op_write(f"[{user_name}] {user_msg[:100]} → {bot_msg[:100]}")
 
         # T3 + T4: Entity Extraction + Lesson Learning — scoped
         if len(user_msg.strip()) > 5:

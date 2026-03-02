@@ -28,7 +28,10 @@ Instead of relying *solely* on hardcoded mathematical heuristics, NeuroForm util
    ```bash
    pip install -e .
    ```
-4. Copy `.env.example` to `.env` and fill in your Neo4j credentials.
+4. Copy `.env.example` to `.env` and fill in your Neo4j credentials, Ollama model, and Discord bots variables:
+   - `DISCORD_TOKEN` and `DISCORD_CHANNEL_ID` (your main chat channel)
+   - `DISCORD_AUTONOMY_CHANNEL_ID` (optional, routes background thoughts away from the main chat)
+   - `DISCORD_OWNER_ID` (comma-separated Discord user IDs allowed to run OS-level tools)
 5. Ensure `ollama` is running locally with your desired model (e.g., `ollama pull llama3`).
 
 ## Documentation & Science

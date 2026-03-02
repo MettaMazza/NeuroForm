@@ -31,7 +31,7 @@ class AgencyDaemon:
         self._user_active_event.set()
         
         # Configuration
-        self._idle_threshold_seconds = 10.0  # Time to wait after user message before starting autonomy
+        self._idle_threshold_seconds = 45.0  # Time to wait after user message before starting autonomy
         self._last_user_activity = time.time()
         
         self.is_running = False
@@ -98,10 +98,10 @@ class AgencyDaemon:
                 response = await loop.run_in_executor(
                     None, 
                     self.orchestrator.process,
-                    prompt, 
-                    "SYSTEM", 
-                    "Nero (System)", 
-                    "PRIVATE"
+                    "SYSTEM",        # user_id
+                    prompt,          # message
+                    "Nero (System)", # user_name
+                    "PRIVATE"        # scope
                 )
                 
                 # 3. Handle the result

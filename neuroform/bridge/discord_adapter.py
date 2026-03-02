@@ -73,6 +73,12 @@ class DiscordAdapter(PlatformAdapter):
             # Never respond to other bots
             if message.author.bot:
                 return
+
+            # ── STRICT CHANNEL GUARD ──
+            # Only listen in the designated chat channel. All other channels are ignored.
+            allowed_chat_channel = os.environ.get("DISCORD_CHANNEL_ID")
+            if allowed_chat_channel and str(message.channel.id) != str(allowed_chat_channel):
+                return
                 
             # IMPERATIVE: Yield autonomy immediately on user input
             if self.agency_daemon:
@@ -97,10 +103,11 @@ class DiscordAdapter(PlatformAdapter):
             )
 
             # Process through bridge (runs sync brain in executor to not block)
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None, self._message_handler, event
-            )
+            loop = asyncio.get_running_loop()
+            async with message.channel.typing():
+                response = await loop.run_in_executor(
+                    None, self._message_handler, event
+                )
 
             if response:
                 await self._send_discord_response(message.channel, response)
@@ -155,9 +162,20 @@ class DiscordAdapter(PlatformAdapter):
 
     async def send_response(self, response: ResponseEvent):
         """Send a response to a specific channel by ID."""
-        channel = self._client.get_channel(int(response.channel_id))
-        if channel:
-            await self._send_discord_response(channel, response)
+        try:
+            channel_id = int(response.channel_id)
+            channel = self._client.get_channel(channel_id)
+            
+            if not channel:
+                # Fallback to API call if not in local cache (useful for secondary channels)
+                channel = await self._client.fetch_channel(channel_id)
+                
+            if channel:
+                await self._send_discord_response(channel, response)
+            else:
+                logger.error(f"Could not find or fetch channel with ID {channel_id}")
+        except Exception as e:
+            logger.error(f"Error sending Discord response to channel {response.channel_id}: {e}")
 
 
 def run_bot():  # pragma: no cover
@@ -270,8 +288,9 @@ def run_bot():  # pragma: no cover
         # We output to the primary channel configured in .env
         import discord
         from neuroform.bridge.bridge import ResponseEvent
+        auto_channel_id = os.environ.get("DISCORD_AUTONOMY_CHANNEL_ID") or channel_id
         event = ResponseEvent(
-            channel_id=channel_id or "", 
+            channel_id=auto_channel_id or "", 
             content=msg,
             scope="PUBLIC"
         )
@@ -286,7 +305,9 @@ def run_bot():  # pragma: no cover
         await agency.start()
         await adapter.start()
 
-    print(f"Listening on channel: {channel_id or 'ALL'}")
+    autonomy_channel_id = os.environ.get("DISCORD_AUTONOMY_CHANNEL_ID")
+    print(f"Chat channel:     {channel_id or 'ALL'}")
+    print(f"Autonomy channel: {autonomy_channel_id or channel_id or 'SAME AS CHAT'}")
     print(f"Model: {model}")
     print("All 9 brain systems active.")
     print("Continuous Agency Daemon active.")

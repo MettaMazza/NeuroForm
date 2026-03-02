@@ -44,6 +44,18 @@ This is the system's "subconscious", implemented in `neuroform.memory.neuroplast
    - `{"action": "DECAY", ...}`
 6. **Cypher Execution**: The daemon parses this JSON array and executes direct `DELETE` or `SET strength = ...` Cypher queries against the Neo4j backend.
 
+## 4. Operational Agency (`AgencyDaemon` & `DiscordAdapter`)
+
+The final pillar is the continuous homeostatic agency loop (`neuroform.daemons.agency`), executing via tools and interacting through Discord.
+
+**The Agency Flow:**
+1. **Idle Monitoring**: The `AgencyDaemon` monitors user activity. After 45 seconds of continuous silence, it drops into `<idle>` homeostasis.
+2. **Autonomous Tool Usage**: During homeostasis, Nero uses a generic prompt to execute OS-level tools (Shell, AppleScript, Filesystem) or Web Search to accomplish tasks and simulate biological "thoughts."
+3. **Permissions**: Generic tools are marked `SAFE`. Sensitive OS tools are marked `OWNER`. Permissions are verified dynamically against `DISCORD_OWNER_ID` at runtime.
+4. **Channel Isolation**: 
+   - `DISCORD_CHANNEL_ID`: The sole interactive chat channel.
+   - `DISCORD_AUTONOMY_CHANNEL_ID`: A strictly enforced output-only routing sink for the background daemon to dump "thoughts" without polluting the core conversation.
+
 ## 6-Tier Architecture & Layer Topology (ErnOS Style)
 
 NeuroForm implements a dynamic root-node layer topology, identical to the architecture found in ErnOS.
