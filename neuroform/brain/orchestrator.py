@@ -207,51 +207,61 @@ class BrainOrchestrator:
 
     def _execute_inference_with_tools(self, user_id: str, message: str, scope: str, tiered_ctx: str) -> str:
         """Handles multi-turn inference for native Python tool execution via Ollama."""
-        tools = tool_registry.get_schemas()
-        
-        # We start with the base prompt which OllamaClient normally builds internally
-        # We will inject the tools natively via the ollama python client.
+        tool_instructions = tool_registry.get_prompt_instructions()
         
         MAX_TOOL_LOOPS = 5
-        conversation = [{"role": "user", "content": f"{tiered_ctx}\n\nUSER MESSAGE:\n{message}"}]
+        conversation = [
+            {"role": "system", "content": tool_instructions},
+            {"role": "user", "content": f"{tiered_ctx}\n\nUSER MESSAGE:\n{message}"}
+        ]
         
         try:
             import ollama
             import json
+            import re
             
             for _ in range(MAX_TOOL_LOOPS):
+                # We DO NOT pass `tools=tools` natively, avoiding 400 errors on strict models.
                 response = ollama.chat(
                     model=self.model,
-                    messages=conversation,
-                    tools=tools
+                    messages=conversation
                 )
                 
                 msg = response.get("message", {})
+                content = msg.get("content", "")
                 
-                # Check if the LLM invoked a tool
-                if msg.get("tool_calls"):
+                # Check for prompt-based tool call in JSON block
+                tool_match = re.search(r'```json\s*(\{.*?"tool_call"\s*:.*?\})\s*```', content, re.DOTALL)
+                
+                if tool_match:
                     # Append the tool call to history so the LLM remembers invoking it
                     conversation.append(msg)
                     
-                    for tool in msg["tool_calls"]:
-                        func_name = tool["function"]["name"]
-                        args = tool["function"]["arguments"]
+                    try:
+                        tool_req = json.loads(tool_match.group(1))
+                        tool_call = tool_req.get("tool_call", {})
+                        func_name = tool_call.get("name")
+                        args = tool_call.get("arguments", {})
                         
                         logger.info(f"Nero autonomous execution: {func_name}({args})")
                         result = tool_registry.execute(func_name, args)
                         
-                        # Provide the result back as a tool message
+                        # Provide the result back as a user observation
                         conversation.append({
-                            "role": "tool",
-                            "name": func_name,
-                            "content": str(result)
+                            "role": "user",
+                            "content": f"TOOL OBSERVATION:\n{result}"
+                        })
+                    except json.JSONDecodeError:
+                        conversation.append({
+                            "role": "user",
+                            "content": "ERROR: Could not parse your JSON block. Please ensure it is strictly formatted."
                         })
                     
                     # Loop continues, re-prompting the LLM with the tool result appended
                     continue
                 
                 # If no tool calls, this is the final text response
-                return msg.get("content", "")
+                return content
                 
             return "Error: Exceeded maximum autonomous tool execution loops."
             

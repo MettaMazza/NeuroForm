@@ -55,6 +55,36 @@ class ToolManager:
         """Returns the list of tool schemas to inject into the LLM request."""
         return self._schemas
 
+    def get_prompt_instructions(self) -> str:
+        """Returns a string description of all tools for the system prompt."""
+        if not self._schemas:
+            return ""
+            
+        instructions = "You have access to the following tools:\n\n"
+        for schema in self._schemas:
+            func = schema["function"]
+            instructions += f"- {func['name']}: {func['description']}\n"
+            instructions += "  Arguments:\n"
+            for arg, meta in func["parameters"]["properties"].items():
+                instructions += f"    - {arg} ({meta['type']}): {meta.get('description', '')}\n"
+            instructions += "\n"
+            
+        instructions += (
+            "To use a tool, you MUST output a JSON block containing EXACTLY one tool call, like this:\n"
+            "```json\n"
+            "{\n"
+            '  "tool_call": {\n'
+            '    "name": "<tool_name>",\n'
+            '    "arguments": {\n'
+            '      "<arg_name>": "<arg_value>"\n'
+            '    }\n'
+            '  }\n'
+            "}\n"
+            "```\n"
+            "Wait for the tool result observation before continuing your response. Do NOT output a tool call if you do not need one. If no tool is needed, just answer normally."
+        )
+        return instructions
+
     def execute(self, name: str, arguments: Dict[str, Any]) -> str:
         """
         Executes a registered tool and returns the result as a string.

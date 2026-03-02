@@ -39,21 +39,13 @@ def test_orchestrator_tool_loop(mock_ollama_chat):
     kg_mock = MagicMock()
     orch = BrainOrchestrator(kg=kg_mock)
     
-    # Simulate first ollama response calling the tool
+    # Simulate first ollama response calling the tool via generic text JSON
     mock_ollama_chat.side_effect = [
         {
             "model": "gemma3:4b",
             "message": {
                 "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "function": {
-                            "name": "dummy_math",
-                            "arguments": {"x": 10, "y": 20}
-                        }
-                    }
-                ]
+                "content": 'I need to use a tool for this.\n```json\n{"tool_call": {"name": "dummy_math", "arguments": {"x": 10, "y": 20}}}\n```'
             }
         },
         # Simulate second ollama response delivering the final answer based on tool result
@@ -81,10 +73,11 @@ def test_orchestrator_tool_loop(mock_ollama_chat):
     second_call_args = mock_ollama_chat.call_args_list[1][1]
     messages = second_call_args["messages"]
     
-    assert messages[0]["role"] == "user"
-    assert "USER MESSAGE:\nWhat is 10 plus 20?" in messages[0]["content"]
-    assert messages[1]["role"] == "assistant"
-    assert "tool_calls" in messages[1]
-    assert messages[2]["role"] == "tool"
-    assert messages[2]["name"] == "dummy_math"
-    assert messages[2]["content"] == "30" # The tool execution result
+    assert messages[0]["role"] == "system"
+    assert "You have access to the following tools" in messages[0]["content"]
+    assert messages[1]["role"] == "user"
+    assert "USER MESSAGE:\nWhat is 10 plus 20?" in messages[1]["content"]
+    assert messages[2]["role"] == "assistant"
+    assert "tool_call" in messages[2]["content"]
+    assert messages[3]["role"] == "user"
+    assert "TOOL OBSERVATION:\n30" in messages[3]["content"]
