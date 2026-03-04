@@ -321,6 +321,9 @@ class BrainOrchestrator:
         
         MAX_TOOL_LOOPS = 5
         tool_outputs_this_turn = []  # Track for Observer-Critic
+        
+        logger.debug(f"\n{'='*50}\n[DEBUG: INFERENCE START FOR USER {user_id}]\nMessage: {message}\nTiered Context:\n{tiered_ctx}\n{'='*50}")
+        
         conversation = [
             {"role": "system", "content": tool_instructions},
             {"role": "user", "content": f"{tiered_ctx}\n\nUSER MESSAGE:\n{message}"}
@@ -343,8 +346,11 @@ class BrainOrchestrator:
                 msg = response.get("message", {})
                 content = msg.get("content", "")
                 
+                logger.debug(f"\n{'='*50}\n[DEBUG: RAW LLM OUTPUT (Loop {_})]\n{content}\n{'='*50}")
+                
                 tool_matches = tool_pattern.findall(content)
                 if tool_matches:
+                    logger.debug(f"[DEBUG: PARSED TOOL CALLS] {tool_matches}")
                     conversation.append(msg)
                     
                     for func_name, args_str in tool_matches:
@@ -365,6 +371,7 @@ class BrainOrchestrator:
                 # If no tool calls, this is the final text response
                 # Safety: strip any leaked tool syntax before returning
                 final_response = sanitize_tool_calls(content)
+                logger.debug(f"\n{'='*50}\n[DEBUG: SANITIZED FINAL RESPONSE]\n{final_response}\n{'='*50}")
 
                 # ── Observer-Critic Audit ──
                 audit = self.observer_critic.audit_response(

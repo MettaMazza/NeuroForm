@@ -200,4 +200,9 @@ def assemble(
         parts.append(build_phud(orchestrator, user_id, user_name, scope))
         parts.append("</part_3_perception_hud>")
 
-    return "\n\n".join(parts)
+    final_prompt = "\n\n".join(parts)
+    
+    # Transparency log
+    logger.debug(f"\n{'='*50}\n[DEBUG: PROMPT ENGINE ASSEMBLED]\n{final_prompt}\n{'='*50}")
+    
+    return final_prompt

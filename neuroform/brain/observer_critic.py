@@ -130,6 +130,8 @@ class ObserverCritic:
             response=bot_response[:6000],
         )
 
+        logger.debug(f"\n{'='*50}\n[DEBUG: OBSERVER-CRITIC AUDIT PROMPT]\n{prompt}\n{'='*50}")
+
         # Call the LLM for audit
         try:
             result = ollama.chat(
@@ -148,6 +150,8 @@ class ObserverCritic:
 
         if not verdict_raw:
             return AuditResult(allowed=True, reason="Empty audit verdict — fail-open")
+
+        logger.debug(f"\n{'='*50}\n[DEBUG: OBSERVER-CRITIC RAW VERDICT]\n{verdict_raw}\n{'='*50}")
 
         # Parse the JSON verdict
         return self._parse_verdict(verdict_raw)
