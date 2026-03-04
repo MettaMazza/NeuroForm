@@ -11,7 +11,7 @@ import asyncio
 from typing import Optional
 
 import discord
-from discord import Intents
+from discord import Intents, app_commands
 
 from neuroform.bridge.bridge import (
     PlatformAdapter,
@@ -35,17 +35,23 @@ class DiscordAdapter(PlatformAdapter):
     sends responses back.
     """
 
-    def __init__(self, token: str, bridge: BridgeCore):
+    def __init__(self, token: str, bridge: BridgeCore,
+                 orchestrator=None, kg=None, scheduler=None):
         self._token = token
         self._bridge = bridge
         self._message_handler = bridge.process_message
+        self._orchestrator = orchestrator
+        self._kg = kg
+        self._scheduler = scheduler
         self.agency_daemon = None
 
         # Set up intents
         intents = Intents.default()
         intents.message_content = True
         self._client = discord.Client(intents=intents)
+        self._tree = app_commands.CommandTree(self._client)
         self._setup_events()
+        self._setup_slash_commands()
 
     @property
     def platform_name(self) -> str:
@@ -55,11 +61,82 @@ class DiscordAdapter(PlatformAdapter):
     def client(self) -> discord.Client:
         return self._client
 
+    def _setup_slash_commands(self):
+        """Register Discord slash commands."""
+
+        @self._tree.command(name="clear", description="[Admin] Wipe all memory data and shut down for a fresh start")
+        async def clear_command(interaction: discord.Interaction):  # pragma: no cover
+            # Check admin permission
+            owner_env = os.environ.get("DISCORD_OWNER_ID", "")
+            owner_ids = [uid.strip() for uid in owner_env.split(",")] if owner_env else []
+            user_id = str(interaction.user.id)
+
+            if user_id not in owner_ids:
+                await interaction.response.send_message(
+                    "⛔ Permission denied. Only admins can use this command.",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.response.send_message(
+                "🧹 **Clearing all memory data...**", ephemeral=False,
+            )
+
+            cleared = []
+            import shutil
+            from pathlib import Path
+
+            # T3: Neo4j Knowledge Graph
+            try:
+                if self._kg and self._kg.driver:
+                    deleted = self._kg.clear_all()
+                    cleared.append(f"Neo4j: {deleted} nodes deleted")
+            except Exception as e:
+                cleared.append(f"Neo4j: error — {e}")
+
+            # T1: ContextStream persistent files
+            memory_core = Path(os.getcwd()) / "memory" / "core"
+            for fname in ["working_memory.jsonl", "archive_working_memory.jsonl", "lessons.json"]:
+                fpath = memory_core / fname
+                if fpath.exists():
+                    fpath.unlink()
+                    cleared.append(f"Deleted {fname}")
+
+            # T5: TapeMachine persistent directory
+            tape_dir = Path(os.getcwd()) / "memory" / "tape"
+            if tape_dir.exists():
+                shutil.rmtree(tape_dir)
+                cleared.append("Deleted tape/ directory")
+
+            summary = "\n".join(f"  ✅ {item}" for item in cleared)
+            await interaction.followup.send(
+                f"🧠 **All memory cleared:**\n{summary}\n\n"
+                f"Shutting down for a fresh start... 👋",
+            )
+
+            logger.info(f"ADMIN CLEAR executed by {interaction.user} ({user_id})")
+
+            # Close connections and shut down
+            if self._scheduler:
+                self._scheduler.stop()
+            if self._kg:
+                self._kg.close()
+            await self._client.close()
+
     def _setup_events(self):
         """Wire Discord events to bridge processing."""
 
         @self._client.event
         async def on_ready():  # pragma: no cover
+            # Sync slash commands to each guild (instant, unlike global sync)
+            try:
+                for guild in self._client.guilds:
+                    self._tree.copy_global_to(guild=guild)
+                    synced = await self._tree.sync(guild=guild)
+                    logger.info(f"Synced {len(synced)} slash command(s) to guild '{guild.name}'")
+            except Exception as e:
+                logger.error(f"Failed to sync slash commands: {e}")
+
             logger.info(f"Discord bot connected as {self._client.user}")
             logger.info(f"Bot ID: {self._client.user.id}")
             logger.info(f"Guilds: {[g.name for g in self._client.guilds]}")
@@ -259,7 +336,7 @@ def run_bot():  # pragma: no cover
         print("ERROR: Neo4j not connected. Set NEO4J_URI/USER/PASSWORD in .env")
         return
 
-    model = os.environ.get("OLLAMA_MODEL", "llama3")
+    model = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
 
     # Create orchestrator with all 9 brain systems
     orchestrator = BrainOrchestrator(kg, model=model)
@@ -273,26 +350,28 @@ def run_bot():  # pragma: no cover
         orchestrator=orchestrator,
     )
 
-    # Create and register Discord adapter
-    adapter = DiscordAdapter(token, bridge)
-    bridge.register_adapter(adapter)
-
-    # Start background scheduler
+    # Create background scheduler (before adapter, so it can be passed for /clear shutdown)
     scheduler = BackgroundScheduler(kg, model=model,
                                     circadian=orchestrator.circadian,
                                     neuroplasticity=orchestrator.neuroplasticity)
+
+    # Create and register Discord adapter
+    adapter = DiscordAdapter(token, bridge,
+                             orchestrator=orchestrator, kg=kg, scheduler=scheduler)
+    bridge.register_adapter(adapter)
+
+    # Start background scheduler
     scheduler.start()
     
     # ─── Start Continuous Autonomy Loop ───
     async def autonomy_output(msg: str):
         # We output to the primary channel configured in .env
-        import discord
         from neuroform.bridge.bridge import ResponseEvent
         auto_channel_id = os.environ.get("DISCORD_AUTONOMY_CHANNEL_ID") or channel_id
         event = ResponseEvent(
-            channel_id=auto_channel_id or "", 
             content=msg,
-            scope="PUBLIC"
+            channel_id=auto_channel_id or "", 
+            platform="discord"
         )
         await adapter.send_response(event)
         

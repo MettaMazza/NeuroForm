@@ -28,7 +28,7 @@ class DefaultModeNetwork:
     detection, and proactive knowledge building.
     """
 
-    def __init__(self, kg: KnowledgeGraph, model: str = "llama3"):
+    def __init__(self, kg: KnowledgeGraph, model: str = "gemma3:4b"):
         self.kg = kg
         self.model = model
 

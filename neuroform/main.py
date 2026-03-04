@@ -1,4 +1,8 @@
 import logging
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 from neuroform.memory.graph import KnowledgeGraph
 from neuroform.memory.neuroplasticity import AutonomousNeuroplasticity
 from neuroform.llm.ollama_client import OllamaClient
@@ -12,8 +16,9 @@ def main(): # pragma: no cover
         print("Neo4j not connected. Set NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD.")
         return
 
-    neuro = AutonomousNeuroplasticity(kg, model="llama3")
-    llm = OllamaClient(kg, model="llama3")
+    model = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
+    neuro = AutonomousNeuroplasticity(kg, model=model)
+    llm = OllamaClient(kg, model=model)
 
     print("\\n[Running Autonomous Memory Optimization]")
     opt_result = neuro.evaluate_and_optimize()

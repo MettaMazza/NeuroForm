@@ -65,6 +65,94 @@ import neuroform.tools.apple_script
 logger = logging.getLogger(__name__)
 
 
+# ─── Tool Call Interceptor ────────────────────────────────────────
+import re as _re
+_TOOL_PATTERN = _re.compile(r"\[TOOL:\s*\w+\(.*?\)\s*\]", _re.DOTALL)
+
+
+def sanitize_tool_calls(text: str) -> str:
+    """
+    Strip ALL internal metadata from LLM output before serving to users.
+
+    This is a critical safety net. The LLM sometimes echoes back internal
+    context that was injected into the system prompt. None of this should
+    ever reach the user. This function strips:
+
+    - [TOOL: func(args)] patterns
+    - [RECONCILIATION: ...] blocks
+    - --- TAPE MACHINE ... --- blocks
+    - [KNOWLEDGE GRAPH ...] / [/KNOWLEDGE GRAPH] blocks
+    - [LESSONS ...] blocks
+    - [CONVERSATION HISTORY] / [/CONVERSATION HISTORY] blocks
+    - [OBSERVER-CRITIC ...] markers
+    - [SYSTEM_INSTRUCTION]: ... lines
+
+    Returns:
+        The text with all internal metadata removed and cleaned up.
+    """
+    if not text:
+        return text
+
+    # Strip [TOOL: ...] calls
+    cleaned = _TOOL_PATTERN.sub("", text)
+
+    # Strip multi-line internal blocks using regex
+    # [RECONCILIATION: ...] blocks (until next blank line or section)
+    cleaned = _re.sub(
+        r'\[RECONCILIATION:.*?\](?:\n(?:  [^\n]*\n)*)?',
+        '', cleaned, flags=_re.DOTALL
+    )
+
+    # --- TAPE MACHINE ... --- blocks (until --- Total: or end of block)
+    cleaned = _re.sub(
+        r'--- TAPE MACHINE.*?--- Total:.*?---',
+        '', cleaned, flags=_re.DOTALL
+    )
+    # Catch partial tape blocks
+    cleaned = _re.sub(
+        r'--- TAPE MACHINE.*?(?=\n\n|\Z)',
+        '', cleaned, flags=_re.DOTALL
+    )
+
+    # [KNOWLEDGE GRAPH ...] to [/KNOWLEDGE GRAPH]
+    cleaned = _re.sub(
+        r'\[KNOWLEDGE GRAPH.*?\[/KNOWLEDGE GRAPH\]',
+        '', cleaned, flags=_re.DOTALL
+    )
+
+    # [LESSONS ...] blocks
+    cleaned = _re.sub(
+        r'\[LESSONS.*?\](?:\n(?:  [^\n]*\n)*)?',
+        '', cleaned, flags=_re.DOTALL
+    )
+
+    # [CONVERSATION HISTORY] to [/CONVERSATION HISTORY]
+    cleaned = _re.sub(
+        r'\[CONVERSATION HISTORY\].*?\[/CONVERSATION HISTORY\]',
+        '', cleaned, flags=_re.DOTALL
+    )
+
+    # [OBSERVER-CRITIC ...] markers
+    cleaned = _re.sub(r'\[OBSERVER-CRITIC[^\]]*\]', '', cleaned)
+
+    # [SYSTEM_INSTRUCTION]: ... lines
+    cleaned = _re.sub(r'\[SYSTEM_INSTRUCTION\]:.*?(?:\n|$)', '', cleaned)
+
+    # Individual tape cells [NNN,N,N] MEMORY: ...
+    cleaned = _re.sub(r'\s*\[?\d+,\d+,\d+\]?\s*MEMORY:.*?(?:\n|$)', '', cleaned)
+
+    # Stray >> markers from tape head
+    cleaned = _re.sub(r'^>>\s*', '', cleaned, flags=_re.MULTILINE)
+
+    # Clean up whitespace
+    cleaned = cleaned.strip()
+    cleaned = _re.sub(r'\n{3,}', '\n\n', cleaned)
+
+    if not cleaned:
+        return "I processed that internally."
+    return cleaned
+
+
 @dataclass
 class ContextObject:
     """All context gathered from the 5-tier recall."""
@@ -86,7 +174,7 @@ class BrainOrchestrator:
     def __init__(
         self,
         kg: KnowledgeGraph,
-        model: str = "llama3",
+        model: str = "gemma3:4b",
         context_stream: Optional[ContextStream] = None,
         vector_store: Optional[VectorStore] = None,
         lesson_manager: Optional[LessonManager] = None,
@@ -126,6 +214,10 @@ class BrainOrchestrator:
         self.neuroplasticity = neuroplasticity or AutonomousNeuroplasticity(
             kg, model=model, amygdala=self.amygdala
         )
+
+        # ─── Observer-Critic (pre-response audit) ──────────────
+        from neuroform.brain.observer_critic import ObserverCritic
+        self.observer_critic = ObserverCritic(model=model)
 
         # Wire OllamaClient
         from neuroform.memory.working_memory import WorkingMemory
@@ -189,7 +281,7 @@ class BrainOrchestrator:
 
         # ──── 6. LLM Inference (with 5-tier context and effectors) ────
         tiered_ctx = self._format_tiered_context(context)
-        response = self._execute_inference_with_tools(user_id, message, scope, tiered_ctx)
+        response = self._execute_inference_with_tools(user_id, message, scope, tiered_ctx, user_name=user_name)
 
         # ──── 7. Observe — persist to all tiers (scoped) ────
         self._observe(user_id, message, response, user_name, scope=scope)
@@ -202,25 +294,33 @@ class BrainOrchestrator:
         sentiment = self._estimate_sentiment(message)
         self.nt.modulate_from_sentiment(sentiment)
 
+        # ──── 10. Auto-compaction check ────
+        self._check_compaction(user_id, scope)
+
         self._last_user_message = message
         return response
 
-    def _execute_inference_with_tools(self, user_id: str, message: str, scope: str, tiered_ctx: str) -> str:
+    def _execute_inference_with_tools(self, user_id: str, message: str, scope: str,
+                                       tiered_ctx: str, user_name: str = "Unknown") -> str:
         """Handles multi-turn inference for native Python tool execution via Ollama."""
         import os
         owner_env = os.environ.get("DISCORD_OWNER_ID", "")
         owner_ids = [uid.strip() for uid in owner_env.split(",")] if owner_env else []
+        # Grant owner privileges to the autonomous daemon
+        if user_id == "SYSTEM":
+            owner_ids.append("SYSTEM")
+            
         is_owner = bool(user_id in owner_ids)
         
-        system_prompt = (
-            "You are Nero, an advanced autonomous AI system.\n"
-            "You have direct access to your host machine's Operating System via tools.\n"
-            "You must use these tools to execute your homeostatic drive, answer user questions, and perform actions.\n"
-            "Do not hallucinate capabilities you do not have; rely exclusively on the tools provided below.\n\n"
-        )
-        tool_instructions = system_prompt + tool_registry.get_prompt_instructions(is_owner)
+        # Three-Tier System Prompt: Kernel + Identity + Perception HUD
+        from neuroform.prompts.prompt_engine import assemble
+        system_prompt = assemble(self, user_id, scope=scope, user_name=user_name)
+        tool_instructions = system_prompt + "\n\n" + tool_registry.get_prompt_instructions(is_owner)
+        
+        tools = tool_registry.get_schemas(is_owner)
         
         MAX_TOOL_LOOPS = 5
+        tool_outputs_this_turn = []  # Track for Observer-Critic
         conversation = [
             {"role": "system", "content": tool_instructions},
             {"role": "user", "content": f"{tiered_ctx}\n\nUSER MESSAGE:\n{message}"}
@@ -228,8 +328,10 @@ class BrainOrchestrator:
         
         try:
             import ollama
-            import json
             import re
+            from neuroform.tools.parser import parse_tool_args
+            
+            tool_pattern = re.compile(r"\[TOOL:\s*(\w+)\((.*?)\)\s*\]", re.DOTALL)
             
             for _ in range(MAX_TOOL_LOOPS):
                 # We DO NOT pass `tools=tools` natively, avoiding 400 errors on strict models.
@@ -241,38 +343,55 @@ class BrainOrchestrator:
                 msg = response.get("message", {})
                 content = msg.get("content", "")
                 
-                # Check for prompt-based tool call in JSON block
-                tool_match = re.search(r'```json\s*(\{.*?"tool_call"\s*:.*?\})\s*```', content, re.DOTALL)
-                
-                if tool_match:
-                    # Append the tool call to history so the LLM remembers invoking it
+                tool_matches = tool_pattern.findall(content)
+                if tool_matches:
                     conversation.append(msg)
                     
-                    try:
-                        tool_req = json.loads(tool_match.group(1))
-                        tool_call = tool_req.get("tool_call", {})
-                        func_name = tool_call.get("name")
-                        args = tool_call.get("arguments", {})
-                        
+                    for func_name, args_str in tool_matches:
+                        args = parse_tool_args(args_str)
                         logger.info(f"Nero autonomous execution: {func_name}({args})")
                         result = tool_registry.execute(func_name, args, is_owner=is_owner)
+                        tool_outputs_this_turn.append({"name": func_name, "output": result})
                         
-                        # Provide the result back as a user observation
+                        # Provide the result back as a user observation, explicitly forcing a stop to break loops
                         conversation.append({
                             "role": "user",
-                            "content": f"TOOL OBSERVATION:\n{result}"
-                        })
-                    except json.JSONDecodeError:
-                        conversation.append({
-                            "role": "user",
-                            "content": "ERROR: Could not parse your JSON block. Please ensure it is strictly formatted."
+                            "content": f"TOOL OBSERVATION FOR {func_name}:\n{result}\n\n[SYSTEM_INSTRUCTION]: You have received the tool result. DO NOT call any more tools. Provide your final plain-text response now."
                         })
                     
                     # Loop continues, re-prompting the LLM with the tool result appended
                     continue
                 
                 # If no tool calls, this is the final text response
-                return content
+                # Safety: strip any leaked tool syntax before returning
+                final_response = sanitize_tool_calls(content)
+
+                # ── Observer-Critic Audit ──
+                audit = self.observer_critic.audit_response(
+                    user_message=message,
+                    bot_response=final_response,
+                    tool_outputs=tool_outputs_this_turn,
+                    conversation_context=tiered_ctx,
+                )
+                if not audit.allowed:
+                    logger.warning(f"Observer-Critic BLOCKED: {audit.reason}")
+                    # Retry once with guidance
+                    conversation.append({"role": "assistant", "content": content})
+                    conversation.append({
+                        "role": "user",
+                        "content": (
+                            f"[OBSERVER-CRITIC REJECTED YOUR RESPONSE]\n"
+                            f"Reason: {audit.reason}\n"
+                            f"Guidance: {audit.guidance}\n"
+                            f"Rewrite your response following the guidance above. "
+                            f"Do not apologize for the error, just provide the corrected response."
+                        )
+                    })
+                    retry = ollama.chat(model=self.model, messages=conversation)
+                    retry_content = retry.get("message", {}).get("content", "")
+                    return sanitize_tool_calls(retry_content) if retry_content else final_response
+
+                return final_response
                 
             return "Error: Exceeded maximum autonomous tool execution loops."
             
@@ -284,7 +403,41 @@ class BrainOrchestrator:
                 skip_context_fetch=True,
                 tiered_context=tiered_ctx,
             )
-            return fallback_response
+            # Safety: strip any leaked tool syntax from fallback
+            return sanitize_tool_calls(fallback_response)
+
+    def _check_compaction(self, user_id: str, scope: str = "PUBLIC"):
+        """Check if auto-compaction is needed and trigger it."""
+        if not self.context_stream.needs_compaction:
+            return
+
+        logger.info("Auto-compaction threshold reached — compacting...")
+        try:
+            import asyncio
+            from neuroform.memory.compaction import compact_context
+
+            # Run compaction asynchronously (fire and forget)
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(compact_context(
+                    context_stream=self.context_stream,
+                    vector_store=self.vector_store,
+                    llm_client=self.client,
+                    model=self.model,
+                    user_id=user_id,
+                    scope=scope,
+                ))
+            else:
+                loop.run_until_complete(compact_context(
+                    context_stream=self.context_stream,
+                    vector_store=self.vector_store,
+                    llm_client=self.client,
+                    model=self.model,
+                    user_id=user_id,
+                    scope=scope,
+                ))
+        except Exception as e:
+            logger.error(f"Auto-compaction failed: {e}")
 
     def _recall(self, query: str, user_id: str,
                 user_name: str = "Unknown",
@@ -295,7 +448,7 @@ class BrainOrchestrator:
         """
         # T1: ContextStream (conversation history)
         conversation = self.context_stream.get_context(
-            target_scope=scope, user_id=user_id, max_turns=12
+            target_scope=scope, user_id=user_id, max_turns=50
         )
 
         # T2: Vector Store (semantic search — scoped)
@@ -447,6 +600,7 @@ Respond with ONLY the JSON object, nothing else."""
             result = ollama.chat(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
+                options={"num_predict": 512},  # Cap output length for extraction
             )
             raw = result.get("message", {}).get("content", "")
 

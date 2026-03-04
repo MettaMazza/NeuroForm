@@ -30,7 +30,7 @@ class BackgroundScheduler:
     def __init__(
         self,
         kg: KnowledgeGraph,
-        model: str = "llama3",
+        model: str = "gemma3:4b",
         dream: Optional[DreamConsolidation] = None,
         dmn: Optional[DefaultModeNetwork] = None,
         neuroplasticity: Optional[AutonomousNeuroplasticity] = None,

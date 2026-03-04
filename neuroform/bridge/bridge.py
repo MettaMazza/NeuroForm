@@ -148,6 +148,12 @@ class BridgeCore:
             else:
                 reply = self._client.chat_with_memory(event.user_id, event.content)
 
+            # ── Bridge-level safety net: strip any leaked tool calls ──
+            # This is the LAST line of defense before the response reaches
+            # the user on Discord/Telegram/etc.
+            from neuroform.brain.orchestrator import sanitize_tool_calls
+            reply = sanitize_tool_calls(reply)
+
             return ResponseEvent(
                 content=reply,
                 channel_id=event.channel_id,

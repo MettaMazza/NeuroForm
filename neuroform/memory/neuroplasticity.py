@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 class AutonomousNeuroplasticity:
     """Uses LLM reasoning to determine memory strengthening, decay, or pruning."""
 
-    def __init__(self, kg: KnowledgeGraph, model: str = "llama3",
+    def __init__(self, kg: KnowledgeGraph, model: str = "gemma3:4b",
                  amygdala: Optional[Amygdala] = None):
         self.kg = kg
         self.model = model

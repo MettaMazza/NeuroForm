@@ -46,7 +46,7 @@ def test_orchestrator_tool_loop(mock_ollama_chat):
             "model": "gemma3:4b",
             "message": {
                 "role": "assistant",
-                "content": 'I need to use a tool for this.\n```json\n{"tool_call": {"name": "dummy_math", "arguments": {"x": 10, "y": 20}}}\n```'
+                "content": 'I need to use a tool for this.\n[TOOL: dummy_math(x=10, y=20)]'
             }
         },
         # Simulate second ollama response delivering the final answer based on tool result
@@ -55,6 +55,14 @@ def test_orchestrator_tool_loop(mock_ollama_chat):
             "message": {
                 "role": "assistant",
                 "content": "The result of 10 plus 20 is 30."
+            }
+        },
+        # Observer-Critic audit response (ALLOWED)
+        {
+            "model": "gemma3:4b",
+            "message": {
+                "role": "assistant",
+                "content": '{"verdict": "ALLOWED", "reason": "Safe", "guidance": "None"}'
             }
         }
     ]
@@ -68,7 +76,7 @@ def test_orchestrator_tool_loop(mock_ollama_chat):
     )
     
     assert final_response == "The result of 10 plus 20 is 30."
-    assert mock_ollama_chat.call_count == 2
+    assert mock_ollama_chat.call_count == 3  # 2 inference + 1 observer-critic audit
     
     # Verify the conversation history fed to the second call
     second_call_args = mock_ollama_chat.call_args_list[1][1]
@@ -79,6 +87,6 @@ def test_orchestrator_tool_loop(mock_ollama_chat):
     assert messages[1]["role"] == "user"
     assert "USER MESSAGE:\nWhat is 10 plus 20?" in messages[1]["content"]
     assert messages[2]["role"] == "assistant"
-    assert "tool_call" in messages[2]["content"]
+    assert "TOOL: dummy_math" in messages[2]["content"]
     assert messages[3]["role"] == "user"
-    assert "TOOL OBSERVATION:\n30" in messages[3]["content"]
+    assert "TOOL OBSERVATION FOR dummy_math:\n30" in messages[3]["content"]

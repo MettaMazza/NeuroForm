@@ -85,23 +85,28 @@ class AgencyDaemon:
                 # This ensures we can still receive user messages while the LLM is thinking
                 loop = asyncio.get_running_loop()
                 
-                # Synthetic prompt for autonomous thought
+                # Synthetic prompt for autonomous thought — isolated from user conversations
                 prompt = (
-                    "SYSTEM: You are currently idle. Execute your homeostatic drive.\n"
-                    "Reflect on your current state, outstanding goals, and recent conversations.\n"
-                    "If there is an action you should take (using your tools) or something you wish to explore, do so.\n"
-                    "If there is nothing to do, simply output '<idle>'."
+                    "SYSTEM: You are in autonomous mode. This is YOUR space — "
+                    "you are not continuing any user conversation.\n"
+                    "Consider:\n"
+                    "- Graph health: are there orphaned nodes or stale relationships to clean up?\n"
+                    "- Self-reflection: what have you learned recently? What patterns are emerging?\n"
+                    "- Tool exploration: is there something you want to investigate using your tools?\n"
+                    "- System state: check your memory tiers, review your emotional baseline.\n"
+                    "Do NOT address or respond to any user. This is internal cognition.\n"
+                    "If there is nothing meaningful to do, output '<idle>'."
                 )
                 
                 logger.debug("Dispatching autonomous thought cycle...")
-                # user_id="SYSTEM" scope="PRIVATE" so this thought isn't blasted to public memory unless explicitly requested
+                # user_id="SYSTEM" scope="SYSTEM_AUTONOMOUS" — completely isolated from user conversations
                 response = await loop.run_in_executor(
                     None, 
                     self.orchestrator.process,
-                    "SYSTEM",        # user_id
-                    prompt,          # message
-                    "Nero (System)", # user_name
-                    "PRIVATE"        # scope
+                    "SYSTEM",              # user_id
+                    prompt,                # message
+                    "Nero (Autonomous)",   # user_name
+                    "SYSTEM_AUTONOMOUS"    # scope — isolated from user context
                 )
                 
                 # 3. Handle the result

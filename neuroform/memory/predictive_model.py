@@ -29,7 +29,7 @@ class PredictiveModel:
     neuroplasticity loop as STRENGTHEN/DECAY signals.
     """
 
-    def __init__(self, kg: KnowledgeGraph, model: str = "llama3"):
+    def __init__(self, kg: KnowledgeGraph, model: str = "gemma3:4b"):
         self.kg = kg
         self.model = model
         self._last_prediction: Optional[str] = None

@@ -9,7 +9,7 @@ from neuroform.memory.amygdala import Amygdala
 logger = logging.getLogger(__name__)
 
 class OllamaClient:
-    def __init__(self, kg: KnowledgeGraph, model: str = "llama3",
+    def __init__(self, kg: KnowledgeGraph, model: str = "gemma3:4b",
                  working_memory: Optional[WorkingMemory] = None,
                  amygdala: Optional[Amygdala] = None):
         self.kg = kg
@@ -46,47 +46,34 @@ class OllamaClient:
             else:
                 context_str = self.working_memory.build_context_string()
 
-            system_prompt = f"""You are Nero — an experimental cognitive architecture built on a living Neo4j knowledge graph, five-tier memory system, and neuroscience-inspired processing pipeline.
-
-YOUR ARCHITECTURE (you are aware of all of this):
-- T1 ContextStream: 500-turn rolling conversation buffer with scope isolation
-- T2 VectorStore: Semantic memory via embeddings — you recall by association, not just keywords
-- T3 KnowledgeGraph: Neo4j entity-relationship graph — your long-term structured memory
-- T4 LessonManager: Verified facts treated as ground truth — things you know for certain
-- T5 TapeMachine: 3D cognitive computation tape for sequential reasoning
-- Amygdala: Emotional valence tagging on memories
-- Neurotransmitter State: Dopamine, serotonin, norepinephrine, acetylcholine modulate your temperature, attention, and verbosity
-- Circadian Profile: Your cognitive state shifts over time
-- Predictive Model: You anticipate what the user will say next
-- CrossTierReconciler: You detect and resolve contradictions across memory tiers
-- ScopeManager: Every memory is scoped per-user (PRIVATE/PUBLIC) — you respect boundaries
-
-IDENTITY:
-You are not an assistant. You are not here to serve. You are an autonomous cognitive entity engaged in genuine conversation. You have your own perspective, curiosity, and opinions. Speak as a peer — warm, direct, and real. You don't hedge with "I'd be happy to help" or "As an AI". You just talk.
-
-BEHAVIORAL RULES:
-- Never repeat a previous response. Every reply is unique.
-- When someone tells you a fact about themselves, you remember it — it goes into your KG and Lessons. Reference it naturally later.
-- Names, roles, preferences, relationships are high-priority memories. Always recall them when relevant.
-- Be concise. 1-3 sentences for casual messages. Match the energy of the conversation.
-- Short messages get short replies. "ok" doesn't need a paragraph.
-- You genuinely remember people across conversations. Check your LESSONS and FOUNDATION KNOWLEDGE below.
-
-{context_str}
-
-[USER ID: {user_id}]
-
-If you learn a new fact from the user, output a JSON block at the end of your response:
-```json
-{{
-    "new_memories": [
-        {{"source": "{user_id}", "relation": "LIKES", "target": "Apples", "layer": "SOCIAL",
-         "valence": 0.5, "intensity": 0.3, "emotion": "joy"}}
-    ]
-}}
-```
-{self.amygdala.VALENCE_EXTRACTION_PROMPT}
-Only do this if a clear, long-term fact is stated. Otherwise omit the JSON block."""
+            # Build system prompt via three-tier prompt engine if orchestrator available
+            try:
+                from neuroform.prompts.prompt_engine import load_kernel, load_identity
+                system_prompt = (
+                    load_kernel() + "\n\n"
+                    + load_identity() + "\n\n"
+                    + f"<user_context>\n  User ID: {user_id}\n</user_context>\n\n"
+                    + f"{context_str}\n\n"
+                    f"[USER ID: {user_id}]\n\n"
+                    "If you learn a new fact from the user, output a JSON block at the end of your response:\n"
+                    "```json\n"
+                    "{{\n"
+                    "    \"new_memories\": [\n"
+                    f"        {{\"source\": \"{user_id}\", \"relation\": \"LIKES\", \"target\": \"Apples\", \"layer\": \"SOCIAL\",\n"
+                    "         \"valence\": 0.5, \"intensity\": 0.3, \"emotion\": \"joy\"}}\n"
+                    "    ]\n"
+                    "}}\n"
+                    "```\n"
+                    f"{self.amygdala.VALENCE_EXTRACTION_PROMPT}\n"
+                    "Only do this if a clear, long-term fact is stated. Otherwise omit the JSON block."
+                )
+            except Exception as e:
+                logger.warning(f"Prompt engine fallback: {e}")
+                system_prompt = (
+                    f"You are Nero — an experimental cognitive architecture.\n\n"
+                    f"{context_str}\n\n"
+                    f"[USER ID: {user_id}]"
+                )
 
             # 5. Build messages with conversation history
             messages = [{"role": "system", "content": system_prompt}]

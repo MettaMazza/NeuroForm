@@ -32,7 +32,7 @@ class ToolManager:
         self._tool_ownership[name] = requires_owner
         
         # Build schema in standard OpenAI/Ollama format
-        schema = {
+        schema: Dict[str, Any] = {
             "type": "function",
             "function": {
                 "name": name,
@@ -76,17 +76,10 @@ class ToolManager:
             instructions += "\n"
             
         instructions += (
-            "To use a tool, you MUST output a JSON block containing EXACTLY one tool call, like this:\n"
-            "```json\n"
-            "{\n"
-            '  "tool_call": {\n'
-            '    "name": "<tool_name>",\n'
-            '    "arguments": {\n'
-            '      "<arg_name>": "<arg_value>"\n'
-            '    }\n'
-            '  }\n'
-            "}\n"
-            "```\n"
+            "To use a tool, you MUST use the following exact syntax:\n"
+            '[TOOL: <tool_name>(<arg_name>="<arg_value>")]\n'
+            "For example:\n"
+            '[TOOL: duckduckgo_search(query="latest news")]\n'
             "Wait for the tool result observation before continuing your response. Do NOT output a tool call if you do not need one. If no tool is needed, just answer normally."
         )
         return instructions
