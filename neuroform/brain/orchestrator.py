@@ -132,6 +132,11 @@ def sanitize_tool_calls(text: str) -> str:
         '', cleaned, flags=_re.DOTALL
     )
 
+    # Clean up any standalone stray closing tags that lost their parent blocks
+    cleaned = _re.sub(r'\[/LESSONS\]\s*', '', cleaned)
+    cleaned = _re.sub(r'\[/KNOWLEDGE GRAPH\]\s*', '', cleaned)
+    cleaned = _re.sub(r'\[/CONVERSATION HISTORY\]\s*', '', cleaned)
+
     # [OBSERVER-CRITIC ...] markers
     cleaned = _re.sub(r'\[OBSERVER-CRITIC[^\]]*\]', '', cleaned)
 
